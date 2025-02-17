@@ -174,7 +174,11 @@ namespace fs
         int next();
 
     protected:
+<<<<<<< HEAD
         size_t m_path_len;
+=======
+        size_t m_path_len = 0;
+>>>>>>> 143de49 (fix on path Walker)
         IFileSystem* m_filesystem;
         std::stack<std::unique_ptr<DIR>> m_stack;
         char m_path_buffer[PATH_MAX];
