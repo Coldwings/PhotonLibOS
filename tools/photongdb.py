@@ -52,6 +52,7 @@ def cprint(stat, *args):
 
 
 def get_next_ready(p):
+<<<<<<< HEAD
     return gdb.parse_and_eval("(photon::thread*)%s" % p.dereference()['__next_ptr'])
 
 
@@ -66,6 +67,20 @@ def get_vcpu(p):
 def get_sleepq(vcpu):
     return vcpu['sleepq']['q']
 
+=======
+    return gdb.parse_and_eval("(void*)gdb_get_next_thread((void*){})".format(p))
+
+
+def get_current():
+    return gdb.parse_and_eval("(void*)gdb_get_current_thread()")
+
+
+def get_vcpu(p):
+    return gdb.parse_and_eval("(void*)gdb_get_vcpu((void*){})".format(p))
+
+def get_thread_stack_ptr(p):
+    return gdb.parse_and_eval("(void*)gdb_get_thread_stack_ptr((void*){})".format(p))
+>>>>>>> 1dcabe0 (gdb eval with return type since debugger may not have source code to resolve)
 
 def in_sleep(q):
     size = q['_M_impl']['_M_finish'] - q['_M_impl']['_M_start']
