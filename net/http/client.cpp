@@ -263,6 +263,7 @@ public:
             resp.reset((char *)buf, kMinimalHeadersSize, true, sock.release(), true, req.verb());
         }
         if (op->resp.receive_header(tmo.timeout()) != 0) {
+            sock->close();
             req.reset_status();
             LOG_ERROR_RETURN(0, ROUNDTRIP_NEED_RETRY, "read response header failed");
         }
