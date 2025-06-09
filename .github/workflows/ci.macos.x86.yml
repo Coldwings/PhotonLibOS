@@ -1,4 +1,4 @@
-name: macOS ARM
+name: macOS x86_64
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
     branches: [ "main", "release/*" ]
 
 jobs:
-  macOS14-arm:
-    runs-on: macos-14
+  macOS13-x86:
+    runs-on: macos-13
 
     steps:
       - uses: szenius/set-timezone@v2.0
@@ -22,21 +22,18 @@ jobs:
       - name: Install Dependencies
         shell: bash
         run: |
-          brew install openssl gflags googletest gsasl
+          brew install openssl gflags googletest gsasl nasm
 
       - name: Build
         run: |
           cmake -B ${{github.workspace}}/build \
-<<<<<<< HEAD
-=======
             -D PHOTON_CXX_STANDARD=17 \
->>>>>>> 262c468 (Pick mac ci from 0.8 back to 0.7 so it able to compile unittests)
             -D PHOTON_ENABLE_ECOSYSTEM=ON \
             -D PHOTON_BUILD_TESTING=ON \
             -D CMAKE_BUILD_TYPE=MinSizeRel \
             -D PHOTON_ENABLE_SASL=ON \
             -D PHOTON_ENABLE_LIBCURL=ON \
-            -D OPENSSL_ROOT_DIR=/opt/homebrew/Cellar/openssl@1.1/1.1.1w
+            -D OPENSSL_ROOT_DIR=/usr/local/opt/openssl@3
           cmake --build ${{github.workspace}}/build -j $(sysctl -n hw.logicalcpu)
 
       - name: Test
