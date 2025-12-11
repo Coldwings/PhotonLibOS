@@ -6,7 +6,7 @@ on:
 
 jobs:
   macOS13-x86:
-    runs-on: macos-13
+    runs-on: macos-15
 
     steps:
       - uses: szenius/set-timezone@v2.0
