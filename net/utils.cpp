@@ -268,6 +268,7 @@ protected:
     };
     IPAddr do_resolve(std::string_view host, Delegate<bool, IPAddr> filter) {
         auto ctr = [&]() -> IPAddrList* {
+<<<<<<< HEAD
             auto addrs = new IPAddrList();
             photon::semaphore sem;
             std::thread([&]() {
@@ -293,6 +294,33 @@ protected:
             }).detach();
             sem.wait(1, resolve_timeout_);
             return addrs;
+=======
+            std::unique_ptr<IPAddrList> addrs(new IPAddrList());
+            auto ctx = std::make_shared<ResolveCtx>();
+            ctx->addrs = addrs.get();
+            ctx->host = std::string(host);
+            ctx->filter = filter;
+            std::thread([ctx]() {
+                auto cb = [&](IPAddr addr) -> int {
+                    SCOPED_LOCK(ctx->lock);
+                    if (ctx->filter && !ctx->filter.fire(addr)) return 0;
+                    if (ctx->addrs) {
+                        ctx->addrs->push_back(new IPAddrNode(addr));
+                    }
+                    return 0;
+                };
+                _gethostbyname(ctx->host, cb);
+                ctx->sem.signal(1);
+            }).detach();
+            ctx->sem.wait(1, resolve_timeout_);
+            SCOPED_LOCK(ctx->lock);
+            ctx->addrs = nullptr;
+            ctx->filter = {};
+            if (addrs->empty()) {
+                return nullptr;
+            }
+            return addrs.release();
+>>>>>>> ba6d32b (Simplify do_resolver)
         };
         auto ips = dnscache_.borrow(host, ctr);
         if (ips->empty()) LOG_ERRNO_RETURN(0, IPAddr(), "Domain resolution for '`' failed", host);
