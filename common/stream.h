@@ -18,6 +18,7 @@ limitations under the License.
 #include <errno.h>
 #include <photon/common/object.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include <memory>

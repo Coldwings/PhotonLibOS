@@ -1,5 +1,6 @@
 #include <photon/common/checksum/crc32c.h>
 #include <photon/common/checksum/crc64ecma.h>
+#include "../crc_shift_tables.h"
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -120,6 +121,33 @@ TEST(TestChecksum, crc32c_sw) {
 
 TEST(TestChecksum, crc32c_hw_small) {
     do_test_crc_small(crc32c_sw, crc32c_hw_portable, 0, 4000);
+}
+
+TEST(TestChecksum, generated_tables_sanity) {
+    EXPECT_EQ(checksum_tables::crc32c_lshift_table_hw[4], 0x493c7d27u);
+    EXPECT_EQ(checksum_tables::crc32c_lshift_table_hw[31], 0xbf818109u);
+    EXPECT_EQ(checksum_tables::crc32c_rshift_table_hw[0], 0xa738873bu);
+    EXPECT_EQ(checksum_tables::crc32c_rshift_table_hw[31], 0xa738873bu);
+
+    EXPECT_EQ(checksum_tables::crc32_merge_constants_table[0], 0x0d3b6092ull);
+    EXPECT_EQ(checksum_tables::crc32_merge_constants_table[1], 0x9e4addf8ull);
+    EXPECT_EQ(checksum_tables::crc32_merge_constants_table[6], 0x170076faull);
+    EXPECT_EQ(checksum_tables::crc32_merge_constants_table[7], 0xdd7e3b0cull);
+
+    EXPECT_EQ(checksum_tables::crc64ecma_lshift_table[0], 0x0100000000000000ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rshift_table[0], 0x5ddb47907c2b5ccdull);
+
+    EXPECT_EQ(checksum_tables::crc64ecma_rk[0], 0xdabe95afc7875f40ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk[6], 0x9c3e466c172963d5ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk[7], 0x92d8af2baf0e1e84ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk[19], 0x60095b008a9efa44ull);
+
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[0], 0xf31fd9271e228b79ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[1], 0x8260adf2381ad81cull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[2], checksum_tables::crc64ecma_rk[0]);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[23], checksum_tables::crc64ecma_rk[1]);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[24], 0ull);
+    EXPECT_EQ(checksum_tables::crc64ecma_rk512[25], 0ull);
 }
 
 void do_perf_crc(const char* name, CRC32C crc32c, unsigned long size) {
