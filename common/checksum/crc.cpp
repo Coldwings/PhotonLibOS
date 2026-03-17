@@ -17,7 +17,7 @@ limitations under the License.
 #include "crc32c.h"
 #include "crc64ecma.h"
 #include "crc_shift_tables.h"
-#include "simd.h"
+#include "checksum_intrinsics.h"
 #include <stdlib.h>
 #include <photon/common/utility.h>
 #include <photon/common/alog.h>
@@ -166,6 +166,43 @@ CHECKSUM_SIMD_TARGET_BEGIN
 using SIMD = checksum_simd::SIMD128;
 using CRC32 = checksum_simd::CRC32CIntrinsic;
 using v128 = SIMD::v128;
+
+inline __attribute__((always_inline))
+v128 fold_16(v128 x, const uint64_t* rk) {
+    return SIMD::clmul<0x10>(x, rk) ^ SIMD::clmul<0x01>(x, rk);
+}
+
+CHECKSUM_SIMD_STRICT_ALIASING_DIAG_PUSH
+inline __attribute__((always_inline))
+v128 load_small(const void* data, size_t n) {
+    assert(n < 16);
+    const auto* end = reinterpret_cast<const uint8_t*>(data) + n;
+    uint64_t tail = 0;
+    if (n & 4) {
+        end -= 4;
+        tail = *reinterpret_cast<const uint32_t*>(end);
+    }
+    if (n & 2) {
+        end -= 2;
+        tail = (tail << 16) | *reinterpret_cast<const uint16_t*>(end);
+    }
+    if (n & 1) {
+        --end;
+        tail = (tail << 8) | *end;
+    }
+    if (n & 8) {
+        auto head = *reinterpret_cast<const uint64_t*>(data);
+        return SIMD::set_u64x2(head, tail);
+    }
+    return SIMD::set_u64x2(tail, 0);
+}
+CHECKSUM_SIMD_STRICT_ALIASING_DIAG_POP
+
+inline __attribute__((always_inline))
+v128 barrett_reduce_to_u64(v128 x, const uint64_t* rk) {
+    auto t = SIMD::clmul<0x00>(x, rk);
+    return x ^ SIMD::clmul<0x10>(t, rk) ^ SIMD::bsl8(t);
+}
 
 template<size_t blksz, typename T> inline __attribute__((always_inline))
 void crc32c_hw_block(const uint8_t*& data, size_t& nbytes, uint32_t& crc) {
@@ -433,13 +470,13 @@ v128 crc64ecma_hw_big_simd128(const uint8_t*& data, size_t& nbytes, uint64_t crc
     xmm[0] ^= SIMD::set_low_u64(~crc); ptr += 8; nbytes -= 128;
     do {
         static_loop<0, 7, 1>(BODY(i) {
-            xmm[i] = SIMD::fold_16(xmm[i], RK(3)) ^ SIMD::loadu(ptr+i);
+            xmm[i] = fold_16(xmm[i], RK(3)) ^ SIMD::loadu(ptr+i);
         });
         ptr += 8; nbytes -= 128;
     } while (nbytes >= 128);
     static_loop<0, 6, 1>(BODY(i) {
         auto I = (i == 6) ? 1 : (9 + i * 2);
-        xmm[7] ^= SIMD::fold_16(xmm[i], RK(I));
+        xmm[7] ^= fold_16(xmm[i], RK(I));
     });
     return xmm[7];
 }
@@ -455,7 +492,7 @@ uint64_t crc64ecma_hw_portable(const uint8_t *data, size_t nbytes, uint64_t crc,
         xmm7 ^= SIMD::loadu(ptr++);
         nbytes -= 16;
     } else /* 0 < nbytes < 16*/ {
-        xmm7 ^= SIMD::load_small(data, nbytes);
+        xmm7 ^= load_small(data, nbytes);
         if (nbytes >= 8) {
             auto shf = SIMD::loadu(get_shf_table(nbytes));
             xmm7 = SIMD::shuffle_bytes(xmm7, shf);
@@ -468,7 +505,7 @@ uint64_t crc64ecma_hw_portable(const uint8_t *data, size_t nbytes, uint64_t crc,
     }
 
     while (nbytes >= 16) {
-        xmm7 = SIMD::fold_16(xmm7, RK(1)) ^ SIMD::loadu(ptr++);
+        xmm7 = fold_16(xmm7, RK(1)) ^ SIMD::loadu(ptr++);
         nbytes -= 16;
     }
 
@@ -481,12 +518,12 @@ uint64_t crc64ecma_hw_portable(const uint8_t *data, size_t nbytes, uint64_t crc,
         xmm0 ^= MASK(3);
         xmm2 = SIMD::shuffle_bytes(xmm2, xmm0);
         xmm2 = SIMD::blend_bytes(xmm2, remainder, xmm0);
-        xmm7 = xmm2 ^ SIMD::fold_16(xmm7, RK(1));
+        xmm7 = xmm2 ^ fold_16(xmm7, RK(1));
     }
 _128_done:
     xmm7  =  SIMD::clmul<0x00>(xmm7, RK(5)) ^ SIMD::bsr8(xmm7);
 _barrett:
-    xmm7 = SIMD::barrett_reduce_to_u64(xmm7, RK(7));
+    xmm7 = barrett_reduce_to_u64(xmm7, RK(7));
     crc = ~SIMD::high_u64(xmm7);
     return crc;
 }
@@ -499,7 +536,7 @@ static uint64_t clmul_modp_crc64ecma_hw(uint64_t crc, uint64_t x) {
     auto crc1x = SIMD::set_low_u64(crc);
     auto constx = SIMD::set_low_u64(x);
     crc1x = SIMD::clmul<0x00>(crc1x, constx);
-    return SIMD::high_u64(SIMD::barrett_reduce_to_u64(crc1x, RK(7)));
+    return SIMD::high_u64(barrett_reduce_to_u64(crc1x, RK(7)));
 }
 
 uint64_t crc64ecma_combine_hw(uint64_t crc1, uint64_t crc2, uint32_t len2) {
@@ -553,6 +590,22 @@ using SIMD512 = checksum_simd::SIMD512;
 using v512 = SIMD512::v512;
 
 inline __attribute__((always_inline))
+v512 fold_128(v512 x, v512 rk, v512 next) {
+    auto lo = _mm512_clmulepi64_epi128(x, rk, 0x01);
+    auto hi = _mm512_clmulepi64_epi128(x, rk, 0x10);
+    return _mm512_ternarylogic_epi64(lo, hi, next, 0x96);
+}
+
+inline __attribute__((always_inline))
+v128 xor_reduce_to_128(v512 x) {
+    auto swapped = _mm512_shuffle_i64x2(x, x, 0x4e);
+    auto folded = _mm256_xor_si256(_mm512_castsi512_si256(swapped),
+                                   _mm512_castsi512_si256(x));
+    return _mm256_extracti64x2_epi64(folded, 0) ^
+           _mm256_extracti64x2_epi64(folded, 1);
+}
+
+inline __attribute__((always_inline))
 v128 crc64ecma_hw_big_avx512(const uint8_t*& data, size_t& nbytes, uint64_t crc) {
     assert(nbytes >= 256);
     auto crc0 = SIMD512::set_low_u64(~crc);
@@ -563,8 +616,8 @@ v128 crc64ecma_hw_big_avx512(const uint8_t*& data, size_t& nbytes, uint64_t crc)
     if (nbytes < 384) {
         auto rk3 = SIMD512::broadcast_128(_RK(3));
         do { // fold 128 bytes each iteration
-            zmm0 = SIMD512::fold_128(zmm0, rk3, SIMD512::loadu(ptr++));
-            zmm4 = SIMD512::fold_128(zmm4, rk3, SIMD512::loadu(ptr++));
+            zmm0 = fold_128(zmm0, rk3, SIMD512::loadu(ptr++));
+            zmm4 = fold_128(zmm4, rk3, SIMD512::loadu(ptr++));
             nbytes -= 128;
         } while (nbytes >= 128);
     } else { // nbytes >= 384
@@ -573,20 +626,20 @@ v128 crc64ecma_hw_big_avx512(const uint8_t*& data, size_t& nbytes, uint64_t crc)
         auto zmm8   = SIMD512::loadu(ptr++);
         nbytes -= 128;
         do { // fold 256 bytes each iteration
-            zmm0 = SIMD512::fold_128(zmm0, rk_1_2, SIMD512::loadu(ptr++));
-            zmm4 = SIMD512::fold_128(zmm4, rk_1_2, SIMD512::loadu(ptr++));
-            zmm7 = SIMD512::fold_128(zmm7, rk_1_2, SIMD512::loadu(ptr++));
-            zmm8 = SIMD512::fold_128(zmm8, rk_1_2, SIMD512::loadu(ptr++));
+            zmm0 = fold_128(zmm0, rk_1_2, SIMD512::loadu(ptr++));
+            zmm4 = fold_128(zmm4, rk_1_2, SIMD512::loadu(ptr++));
+            zmm7 = fold_128(zmm7, rk_1_2, SIMD512::loadu(ptr++));
+            zmm8 = fold_128(zmm8, rk_1_2, SIMD512::loadu(ptr++));
             nbytes -= 256;
         } while (nbytes >= 256);
         auto rk3 = SIMD512::broadcast_128(_RK(3));
-        zmm0 = SIMD512::fold_128(zmm0, rk3, zmm7);
-        zmm4 = SIMD512::fold_128(zmm4, rk3, zmm8);
+        zmm0 = fold_128(zmm0, rk3, zmm7);
+        zmm4 = fold_128(zmm4, rk3, zmm8);
     }
     auto zmm7 = SIMD512::set_low_128(SIMD512::upper_128(zmm4));
-    auto zmm1 = SIMD512::fold_128(zmm0, SIMD512::loadu(_RK(9)), zmm7);
-         zmm1 = SIMD512::fold_128(zmm4, SIMD512::loadu(_RK(17)), zmm1);
-    return SIMD512::xor_reduce_to_128(zmm1);
+    auto zmm1 = fold_128(zmm0, SIMD512::loadu(_RK(9)), zmm7);
+         zmm1 = fold_128(zmm4, SIMD512::loadu(_RK(17)), zmm1);
+    return xor_reduce_to_128(zmm1);
 }
 
 uint64_t crc64ecma_hw_avx512(const uint8_t *buf, size_t len, uint64_t crc) {

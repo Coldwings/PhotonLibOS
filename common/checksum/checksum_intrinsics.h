@@ -66,8 +66,6 @@ limitations under the License.
 #define CHECKSUM_SIMD_TARGET_AVX512_END
 #endif
 
-namespace checksum_simd {
-
 #if defined(__clang__)
 #define CHECKSUM_SIMD_STRICT_ALIASING_DIAG_PUSH \
     _Pragma("clang diagnostic push") \
@@ -85,44 +83,7 @@ namespace checksum_simd {
 #define CHECKSUM_SIMD_STRICT_ALIASING_DIAG_POP
 #endif
 
-template<typename Derived, typename V128>
-struct SIMD128Common {
-    static V128 fold_16(V128 x, const uint64_t* rk) {
-        return Derived::template clmul<0x10>(x, rk) ^
-               Derived::template clmul<0x01>(x, rk);
-    }
-
-    CHECKSUM_SIMD_STRICT_ALIASING_DIAG_PUSH
-    static V128 load_small(const void* data, size_t n) {
-        assert(n < 16);
-        const auto* end = reinterpret_cast<const uint8_t*>(data) + n;
-        uint64_t tail = 0;
-        if (n & 4) {
-            end -= 4;
-            tail = *reinterpret_cast<const uint32_t*>(end);
-        }
-        if (n & 2) {
-            end -= 2;
-            tail = (tail << 16) | *reinterpret_cast<const uint16_t*>(end);
-        }
-        if (n & 1) {
-            --end;
-            tail = (tail << 8) | *end;
-        }
-        if (n & 8) {
-            auto head = *reinterpret_cast<const uint64_t*>(data);
-            return Derived::set_u64x2(head, tail);
-        }
-        return Derived::set_u64x2(tail, 0);
-    }
-    CHECKSUM_SIMD_STRICT_ALIASING_DIAG_POP
-
-    static V128 barrett_reduce_to_u64(V128 x, const uint64_t* rk) {
-        auto t = Derived::template clmul<0x00>(x, rk);
-        return x ^ Derived::template clmul<0x10>(t, rk) ^ Derived::bsl8(t);
-    }
-};
-
+namespace checksum_simd {
 struct Runtime {
     static bool supports_hw_crc32c() {
 #if defined(__x86_64__)
@@ -140,6 +101,7 @@ struct Runtime {
     return false;
 #endif
     }
+
 
     static bool supports_crc64_simd128() {
 #if defined(__x86_64__)
@@ -236,7 +198,7 @@ struct CRC32CIntrinsic {
 };
 
 #ifdef __x86_64__
-struct SIMD128 : SIMD128Common<SIMD128, __m128i> {
+struct SIMD128 {
     using v128 = __m128i;
 
     static v128 loadu(const void* ptr) {
@@ -264,6 +226,13 @@ struct SIMD128 : SIMD128Common<SIMD128, __m128i> {
         return _mm_blendv_epi8(x, y, mask);
     }
 
+    // Keep the CLMUL lane selector as a template parameter instead of a plain
+    // int argument. Although the x86 intrinsic is spelled as
+    // _mm_clmulepi64_si128(x, y, imm8), the imm8 operand is an instruction
+    // immediate and must be compile-time constant in practice. Using a
+    // template here also keeps the ARM implementation aligned with x86: both
+    // backends can specialize directly for the selected 64-bit lane pair with
+    // no runtime switch or fallback path.
     template<uint8_t imm>
     static v128 clmul(v128 x, const uint64_t* rk) {
         return _mm_clmulepi64_si128(x, loadu(rk), imm);
@@ -316,26 +285,13 @@ struct SIMD512 {
         return _mm512_castsi128_si512(value);
     }
 
-    static v512 fold_128(v512 x, v512 rk, v512 next) {
-        auto lo = _mm512_clmulepi64_epi128(x, rk, 0x01);
-        auto hi = _mm512_clmulepi64_epi128(x, rk, 0x10);
-        return _mm512_ternarylogic_epi64(lo, hi, next, 0x96);
-    }
-
     static SIMD128::v128 upper_128(v512 x) {
         return _mm512_extracti64x2_epi64(x, 0x03);
     }
 
-    static SIMD128::v128 xor_reduce_to_128(v512 x) {
-        auto swapped = _mm512_shuffle_i64x2(x, x, 0x4e);
-        auto folded = _mm256_xor_si256(_mm512_castsi512_si256(swapped),
-                                       _mm512_castsi512_si256(x));
-        return _mm256_extracti64x2_epi64(folded, 0) ^
-               _mm256_extracti64x2_epi64(folded, 1);
-    }
 };
 #elif defined(__aarch64__)
-struct SIMD128 : SIMD128Common<SIMD128, uint8x16_t> {
+struct SIMD128 {
     using v128 = uint8x16_t;
 
     static v128 loadu(const void* ptr) {
@@ -384,12 +340,7 @@ struct SIMD128 : SIMD128Common<SIMD128, uint8x16_t> {
     }
 
     template<uint8_t imm>
-    static v128 clmul(v128 x, v128 y) {
-        static_assert((imm & 0xee) == 0, "unsupported clmul lane selector");
-        if (imm & 0x01) x = vextq_u8(x, x, 8);
-        if (imm & 0x10) y = vextq_u8(y, y, 8);
-        return pmull_low(x, y);
-    }
+    static v128 clmul(v128 x, v128 y);
 
     static v128 bsl8(v128 x) {
         return vextq_u8(vdupq_n_u8(0), x, 8);
@@ -408,6 +359,36 @@ struct SIMD128 : SIMD128Common<SIMD128, uint8x16_t> {
     }
 
 };
+
+template<uint8_t imm>
+inline SIMD128::v128 SIMD128::clmul(v128, v128) {
+    static_assert(imm == 0x00 || imm == 0x01 || imm == 0x10 || imm == 0x11,
+                  "unsupported clmul lane selector");
+    __builtin_unreachable();
+}
+
+// AArch64 only ever sees compile-time CLMUL lane selectors in this codebase.
+// Use explicit specializations instead of data-dependent bit tests so each imm
+// maps directly to one fixed vextq_u8 + pmull sequence.
+template<>
+inline SIMD128::v128 SIMD128::clmul<0x00>(v128 x, v128 y) {
+    return pmull_low(x, y);
+}
+
+template<>
+inline SIMD128::v128 SIMD128::clmul<0x01>(v128 x, v128 y) {
+    return pmull_low(vextq_u8(x, x, 8), y);
+}
+
+template<>
+inline SIMD128::v128 SIMD128::clmul<0x10>(v128 x, v128 y) {
+    return pmull_low(x, vextq_u8(y, y, 8));
+}
+
+template<>
+inline SIMD128::v128 SIMD128::clmul<0x11>(v128 x, v128 y) {
+    return pmull_low(vextq_u8(x, x, 8), vextq_u8(y, y, 8));
+}
 #endif
 
 }  // namespace checksum_simd
