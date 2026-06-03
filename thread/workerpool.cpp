@@ -23,6 +23,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <future>
+#include <mutex>
 #include <random>
 #include <thread>
 #include <atomic>
@@ -84,10 +85,16 @@ public:
         return vcpus.size();
     }
 
+    // Serialize photon::fini() across workers. When all workers receive
+    // the shutdown signal simultaneously (via RingChannel), parallel
+    // vcpu teardown may race on shared state and cause SegFault.
+    std::mutex fini_mtx;
+
     void worker_thread_routine(int ev_engine, int io_engine) {
         photon::init(ev_engine, io_engine);
-        DEFER(photon::fini());
         main_loop();
+        std::lock_guard<std::mutex> lock(fini_mtx);
+        photon::fini();
     }
 
     void add_vcpu() {
