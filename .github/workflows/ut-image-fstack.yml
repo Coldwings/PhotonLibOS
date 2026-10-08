@@ -7,12 +7,17 @@ on:
         description: 'Validation reason'
         required: false
         default: ''
+      default_base_only:
+        description: 'Only validate the ARC image with its default published base'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   build_images:
+    if: ${{ ! inputs.default_base_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -54,4 +59,34 @@ jobs:
             ! ldd /home/runner/bin/Runner.Listener | grep "not found"
           '
           docker image inspect photon-fstack-base:verification photon-fstack-arc:verification \
+            --format '{{.Id}} {{.Os}}/{{.Architecture}}'
+
+  build_arc_with_default_base:
+    if: ${{ inputs.default_base_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ARC runner with the existing published base
+        run: |
+          docker build --progress=plain \
+            --build-arg TARGETARCH=amd64 \
+            --tag photon-fstack-arc:verification \
+            .github/workflows/images/arc-runner-fstack
+
+      - name: Check ARC runner and fstack artifacts
+        run: |
+          docker run --rm --entrypoint /bin/sh photon-fstack-arc:verification -ec '
+            test "$(id -u)" = 1001
+            sudo -n true
+            test -x /home/runner/run.sh
+            test -f /usr/local/lib/libfstack.a
+            test -f /usr/local/include/ff_api.h
+            pkg-config --modversion libdpdk
+            /home/runner/bin/Runner.Listener --version
+            ! ldd /home/runner/bin/Runner.Listener | grep "not found"
+          '
+          docker image inspect photon-fstack-arc:verification \
             --format '{{.Id}} {{.Os}}/{{.Architecture}}'
